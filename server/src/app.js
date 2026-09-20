@@ -12,6 +12,7 @@ const friendRoutes = require("./routes/friend-routes");
 const notificationRoutes = require("./routes/notification-routes");
 const conversationRoutes = require("./routes/message-routes");
 const groupRoutes = require("./routes/group-routes");
+const { rateLimiter } = require("./middleware/rate-limiter");
 
 const app = express();
 
@@ -35,6 +36,16 @@ app.use("/health", (req, res) => {
   console.log("server connected");
   return res.json("server connected");
 });
+
+app.use(
+  "/api/v1",
+  rateLimiter({
+    capacity: 20, // burst up to 20
+    refillRatePerSec: 5, // then 5 req/sec sustained
+    windowSizeMs: 60_000,
+    windowLimit: 300, // hard cap: 300 req/min
+  }),
+);
 
 app.use("/api/v1", authRoutes);
 app.use("/api/v1", friendRoutes);

@@ -21,22 +21,22 @@ async function register(req, res, next) {
 
     const user = await registerService({ email, username, password });
 
-    // await emailQueue.add(
-    //   "verify-email",
-    //   {
-    //     type: "verify-email",
-    //     email: user.email,
-    //   },
-    //   {
-    //     attempts: 3,
-    //     backoff: {
-    //       type: "exponential",
-    //       delay: 2000,
-    //     },
-    //     removeOnComplete: true,
-    //     removeOnFail: false,
-    //   },
-    // );
+    await emailQueue.add(
+      "verify-email",
+      {
+        type: "verify-email",
+        email: user.email,
+      },
+      {
+        attempts: 3,
+        backoff: {
+          type: "exponential",
+          delay: 2000,
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
+    );
 
     req.login(user, (err) => {
       if (err) return next(err);

@@ -40,10 +40,10 @@ app.use("/health", (req, res) => {
 app.use(
   "/api/v1",
   rateLimiter({
-    capacity: 20, // burst up to 20
+    capacity: 30, // burst up to 30
     refillRatePerSec: 5, // then 5 req/sec sustained
     windowSizeMs: 60_000,
-    windowLimit: 300, // hard cap: 300 req/min
+    windowLimit: 350, // hard cap: 350 req/min
   }),
 );
 

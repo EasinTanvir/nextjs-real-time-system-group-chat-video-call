@@ -4,23 +4,35 @@ A real-time chat application with 1:1 and group messaging, live presence, friend
 
 ## Project Structure
 
-```
+```text
 my-app/
-├── server/          # Nodejs and Express.js + Socket.IO backend
+
+├── server/                  # Node.js and Express.js + Socket.IO backend
 │   ├── src/
-│   │   ├── config/        # env, session, passport config
-│   │   ├── controllers/   # route handlers
-│   │   ├── services/      # business logic (friends, messages, groups, calls)
-│   │   ├── routes/        # Express route definitions
-│   │   ├── socket/        # Socket.IO connection handling, call signaling
-│   │   ├── db/             # Drizzle schema & client
-│   │   ├── lib/            # shared singletons (socket instance, call store)
-│   │   └── redis/          # BullMQ workers, pub/sub setup
-├── src/             # Next.js frontend (App Router)
-│   ├── app/               # routes: /chat, /chat/conversation/[id], /users, /friends
-│   ├── components/        # UI components (chat, calls, modals)
-│   ├── providers/         # SocketProvider, CallProvider (React context)
-│   └── lib/                # API client, helpers
+│   │   ├── config/          # env, session, passport config
+│   │   ├── controllers/     # route handlers
+│   │   ├── services/        # business logic (friends, messages, groups, calls)
+│   │   ├── routes/           # Express route definitions
+│   │   ├── middleware/       # Express middleware, including rate limiting
+│   │   ├── socket/            # Socket.IO connection handling, call signaling
+│   │   ├── db/                # Drizzle schema & client
+│   │   ├── lib/               # shared singletons (socket instance, call store)
+│   │   └── redis/             # Redis clients, BullMQ, pub/sub, rate limiter
+│   │
+│   ├── Scripts/
+│   │   └── hybrid-limiter.lua # Atomic Redis Lua script for the hybrid rate limiter
+│   │
+│   └── test-rate-limiter.js   # Rate limiter test script
+│
+├── src/                      # Next.js frontend (App Router)
+│   ├── app/                   # routes: /chat, /chat/conversation/[id], /users, /friends
+│   ├── components/            # UI components (chat, calls, modals)
+│   ├── providers/             # SocketProvider, CallProvider (React context)
+│   └── lib/                   # API client, helpers
+│
+├── docs/
+│   └── rate-limiter.png       # Hybrid rate limiter architecture/flow
+│
 ├── public/
 ```
 
@@ -60,6 +72,153 @@ my-app/
 - **Live call timer**, synced to actual peer-connection establishment (not just signaling completion)
 - **Call history messages** — completed and missed calls are logged into the conversation as system messages, including duration
 
+### Rate Limiting
+
+- **Hybrid Token Bucket + Sliding Window Counter** — combines burst protection with sustained request-rate control
+- **Token Bucket** — controls short bursts using configurable bucket capacity, refill rate, and request cost
+- **Sliding Window Counter** — limits the number of requests allowed over a configurable time window while avoiding the memory cost of storing every request timestamp
+- **Redis-backed state** — token and request-count state are stored in Redis, allowing the limiter to work across multiple server instances
+- **Atomic Redis Lua execution** — the complete read → calculate → decide → update flow runs inside Redis as one atomic operation, preventing race conditions between concurrent requests
+- **Redis script caching** — the Lua script is loaded with `SCRIPT LOAD` and executed with `EVALSHA`, with automatic fallback/reload handling for `NOSCRIPT`
+- **Configurable identity and limits** — requests can be identified by authenticated user ID or IP address, with configurable capacity, refill rate, window size, window limit, and request cost
+- **Rate-limit response headers** — exposes token and sliding-window state through `X-RateLimit-*` headers and returns `429 Too Many Requests` with retry information when a request is rejected
+
+## Hybrid Rate Limiter
+
+The rate limiter combines two algorithms because they solve different problems.
+
+![Hybrid Rate Limiter](docs/rate-limiter.png)
+
+### Token Bucket
+
+The Token Bucket controls **burst traffic**.
+
+For example:
+
+```text
+capacity = 10 tokens
+refillRate = 3 tokens/second
+cost = 1 token/request
+```
+
+The bucket can hold a maximum of 10 tokens. Each request consumes tokens based on its configured cost. Tokens are continuously refilled according to the elapsed time, but never beyond the bucket capacity.
+
+This means a client with 10 available tokens can make a short burst of up to 10 requests immediately. After the burst, the bucket recovers at 3 tokens per second.
+
+```text
+Bucket capacity = maximum sudden burst
+Refill rate     = how quickly burst capacity recovers
+```
+
+### Sliding Window Counter
+
+The Sliding Window Counter controls the **sustained request rate**.
+
+For example:
+
+```text
+windowSize  = 3 seconds
+windowLimit = 15 requests
+```
+
+The limiter keeps the request count for:
+
+```text
+Current window
+Previous window
+```
+
+Instead of storing every request timestamp, it estimates the number of requests in the current rolling window by weighting the previous fixed window based on how far the current window has progressed.
+
+The calculation is approximately:
+
+```text
+estimatedCount =
+    previousWindowCount × previousWindowWeight
+    + currentWindowCount
+```
+
+The previous-window weight decreases as the current window progresses.
+
+For example, halfway through a 3-second window:
+
+```text
+Previous window count = 10
+Current window count  = 5
+
+Weight = 0.5
+
+Estimated count = (10 × 0.5) + 5
+                = 10 requests
+```
+
+If the configured limit is 15 requests, the request can still be accepted.
+
+This avoids the sharp reset that a simple fixed-window counter would have at the boundary between windows.
+
+### Why Combine Both?
+
+The two algorithms provide different protections:
+
+```text
+Token Bucket
+    ↓
+Controls sudden bursts
+
+Sliding Window Counter
+    ↓
+Controls sustained request volume
+```
+
+For example:
+
+```text
+Token Bucket
+capacity       = 10
+refill         = 3 tokens/sec
+
+Sliding Window
+window         = 3 seconds
+limit          = 15 requests
+```
+
+A client may be able to send several requests immediately because tokens are available, while the sliding window prevents the client from continuously exceeding the configured request volume.
+
+### Atomic Redis Lua Execution
+
+The rate limiter performs multiple operations:
+
+```text
+1. Read token bucket state
+2. Calculate token refill
+3. Read current/previous window counts
+4. Calculate estimated window count
+5. Decide whether the request is allowed
+6. Update tokens and request count
+7. Set Redis expirations
+```
+
+Doing these operations separately from Node.js could introduce race conditions when multiple requests arrive concurrently.
+
+Instead, the entire operation is executed inside Redis through `hybrid-limiter.lua`.
+
+```text
+Node.js
+   │
+   │ EVALSHA
+   ▼
+Redis
+   │
+   └── hybrid-limiter.lua
+          │
+          ├── Token Bucket calculation
+          ├── Sliding Window calculation
+          ├── Allow / Reject decision
+          └── Atomic state update
+```
+
+Because the Lua script executes atomically inside Redis, concurrent requests cannot interleave the read and update steps of the limiter.
+
 ## Tech Stack
 
 ### Frontend
@@ -83,6 +242,7 @@ my-app/
 - **Redis Pub/Sub** — powers the Socket.IO adapter, allowing real-time events (messages, presence, notifications, call signaling) to propagate correctly across multiple server instances rather than being trapped in a single process's memory
 - **Redis + BullMQ** — background job queue for asynchronous work (e.g. transactional email), decoupled from the request/response cycle
 - **Redis Session Store** — centralized session storage shared across all server instances, so authentication survives horizontal scaling and load-balanced deployments (rather than sessions being pinned to whichever instance issued them)
+- **Redis + Lua** — atomic execution of the hybrid Token Bucket and Sliding Window Counter rate limiter
 - **WebSockets (Socket.IO)** — bidirectional real-time event channel for messages, presence, notifications, and typing/room events
 - **WebRTC** — peer-to-peer media transport for audio/video calls; Socket.IO is used purely as the signaling channel (SDP offer/answer and ICE candidate exchange), keeping actual audio/video traffic off the application server entirely
 
@@ -96,10 +256,35 @@ Without it, `io.to(room).emit(...)` only reaches sockets connected to _that spec
 
 Socket.IO authentication in this app works by running the same Express session + Passport middleware used for REST routes against each socket's handshake request. If sessions were stored in-memory (the Express default), a session created on one instance would be invisible to another — breaking login the moment traffic is load-balanced across multiple processes. A centralized Redis session store makes the session valid across the entire fleet.
 
+### Why Redis-backed rate limiting matters here
+
+The rate limiter stores its state in Redis rather than process memory. This means the same user's rate-limit state can be shared across multiple Node.js instances.
+
+Without centralized state:
+
+```text
+Request → Server A → local limiter
+Request → Server B → separate local limiter
+```
+
+The user could effectively receive a separate limit on each server.
+
+With Redis:
+
+```text
+                 ┌── Server A ──┐
+Client ──────────┤              ├── Redis Rate Limiter State
+                 └── Server B ──┘
+```
+
+All instances evaluate the same token bucket and sliding-window state.
+
 ### Real-time event design
 
 - **Personal room** (`userId`) — every authenticated socket joins a room named after its user ID. This is used for anything that must reach a user regardless of what page/conversation they currently have open: notifications, presence updates, sidebar conversation updates, and incoming call signaling.
+
 - **Conversation room** (`conversation:{id}`) — joined only while a user is actively viewing that specific conversation, and authorized server-side against actual membership before the join is allowed. Used for the live message stream itself, keeping room membership proportional to _concurrently active viewers_ rather than total historical membership — this is what keeps the design viable even for users with hundreds of conversations.
+
 - **Sidebar updates** are emitted as a separate, lightweight event (`sidebar:update`) to every conversation member's personal room, decoupled from the conversation-room broadcast — so the conversation list stays live no matter what page a user is on, without needing to join every conversation room up front.
 
 ### Calling architecture
@@ -161,6 +346,51 @@ npm run dev
 
 ```bash
 cd server
+
 npx drizzle-kit generate
 npx drizzle-kit migrate
 ```
+
+### Rate Limiter Configuration
+
+The rate limiter can be configured through the middleware options:
+
+```js
+rateLimiter({
+  capacity: 10,
+  refillRatePerSec: 3,
+  windowSizeMs: 3000,
+  windowLimit: 15,
+  cost: 1,
+});
+```
+
+The configuration controls two independent dimensions:
+
+```text
+Token Bucket
+capacity          → maximum burst size
+refillRatePerSec  → token recovery rate
+
+Sliding Window
+windowSizeMs      → rolling time period
+windowLimit       → maximum request volume
+```
+
+The middleware also exposes rate-limit information through response headers:
+
+```text
+X-RateLimit-Limit
+X-RateLimit-Remaining
+X-RateLimit-Window-Limit
+X-RateLimit-Window-Count
+Retry-After
+```
+
+When a request exceeds the configured limit, the API responds with:
+
+```http
+429 Too Many Requests
+```
+
+along with the reason and retry information.

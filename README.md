@@ -38,22 +38,6 @@ my-app/
 
 ## Features
 
-**### Rate Limiting**
-
-- \***\*Hybrid Token Bucket + Sliding Window Counter\*\*** — combines burst protection with sustained request-rate control
-
-- \***\*Token Bucket\*\*** — controls short bursts using configurable bucket capacity, refill rate, and request cost
-
-- \***\*Sliding Window Counter\*\*** — limits the number of requests allowed over a configurable time window while avoiding the memory cost of storing every request timestamp
-
-- \***\*Redis-backed state\*\*** — token and request-count state are stored in Redis, allowing the limiter to work across multiple server instances
-
-- \***\*Atomic Redis Lua execution\*\*** — the complete read → calculate → decide → update flow runs inside Redis as one atomic operation, preventing race conditions between concurrent requests
-
-- \***\*Redis script caching\*\*** — the Lua script is loaded with `SCRIPT LOAD` and executed with `EVALSHA`, with fallback to `EVAL` if script execution fails
-
-- \***\*Configurable limits\*\*** — the demo uses a bucket capacity of `5`, refill rate of `1 token/sec`, a `5-second` sliding window, a window limit of `5 requests`, and a request cost of `1`
-
 **## Hybrid Rate Limiter**
 
 The rate limiter combines two algorithms because they solve different problems.

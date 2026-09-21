@@ -38,40 +38,6 @@ my-app/
 
 ## Features
 
-### Messaging
-
-- **1:1 direct conversations** — auto-created the moment a friend request is accepted
-- **Group chat** — create groups from your friends list, add members later, live member roster
-- **Real-time delivery** via Socket.IO, scoped per-conversation for efficient fan-out
-- **Optimistic UI** — messages appear instantly on send, reconciled against the server response
-- **Unread counts & read receipts** — per-conversation cursor tracking (`lastReadMessageId` / `lastReadAt`)
-- **Live sidebar updates** — conversation list re-sorts and updates last-message/unread badges in real time without refetching the full list
-
-### Friends & Social
-
-- **Friend request flow** — send, accept, reject, cancel, with duplicate/self/reverse-pending protection enforced at the DB level (partial unique indexes + check constraints)
-- **Discover users** — browse non-friends, see pending request state inline
-- **Real-time friend events** — requests, acceptances, and rejections update both parties' UI instantly, including live socket-room updates so already-connected clients don't need a reload
-
-### Presence
-
-- **Online/offline status**, scoped to friends only (not broadcast platform-wide, for privacy and efficiency)
-- **Grace-period disconnect handling** — brief network drops or page reloads don't flash a user offline
-- **Last-seen timestamps** persisted on true disconnect
-
-### Notifications
-
-- **In-app real-time notifications** for friend requests, acceptances, and rejections
-- **Unread badge counter** with mark-as-read / mark-all-as-read
-
-### Audio & Video Calling
-
-- **WebRTC peer-to-peer calling** (audio and video), signaled entirely over the existing Socket.IO connection — no separate media server required
-- **Full call lifecycle** — ringing, accept, reject, cancel, busy detection, ring timeout, and clean teardown on disconnect
-- **In-call controls** — mute/unmute mic, toggle camera on/off, with the peer notified of state changes
-- **Live call timer**, synced to actual peer-connection establishment (not just signaling completion)
-- **Call history messages** — completed and missed calls are logged into the conversation as system messages, including duration
-
 ### Rate Limiting
 
 - **Hybrid Token Bucket + Sliding Window Counter** — combines burst protection with sustained request-rate control
@@ -218,6 +184,40 @@ Redis
 ```
 
 Because the Lua script executes atomically inside Redis, concurrent requests cannot interleave the read and update steps of the limiter.
+
+### Messaging
+
+- **1:1 direct conversations** — auto-created the moment a friend request is accepted
+- **Group chat** — create groups from your friends list, add members later, live member roster
+- **Real-time delivery** via Socket.IO, scoped per-conversation for efficient fan-out
+- **Optimistic UI** — messages appear instantly on send, reconciled against the server response
+- **Unread counts & read receipts** — per-conversation cursor tracking (`lastReadMessageId` / `lastReadAt`)
+- **Live sidebar updates** — conversation list re-sorts and updates last-message/unread badges in real time without refetching the full list
+
+### Friends & Social
+
+- **Friend request flow** — send, accept, reject, cancel, with duplicate/self/reverse-pending protection enforced at the DB level (partial unique indexes + check constraints)
+- **Discover users** — browse non-friends, see pending request state inline
+- **Real-time friend events** — requests, acceptances, and rejections update both parties' UI instantly, including live socket-room updates so already-connected clients don't need a reload
+
+### Presence
+
+- **Online/offline status**, scoped to friends only (not broadcast platform-wide, for privacy and efficiency)
+- **Grace-period disconnect handling** — brief network drops or page reloads don't flash a user offline
+- **Last-seen timestamps** persisted on true disconnect
+
+### Notifications
+
+- **In-app real-time notifications** for friend requests, acceptances, and rejections
+- **Unread badge counter** with mark-as-read / mark-all-as-read
+
+### Audio & Video Calling
+
+- **WebRTC peer-to-peer calling** (audio and video), signaled entirely over the existing Socket.IO connection — no separate media server required
+- **Full call lifecycle** — ringing, accept, reject, cancel, busy detection, ring timeout, and clean teardown on disconnect
+- **In-call controls** — mute/unmute mic, toggle camera on/off, with the peer notified of state changes
+- **Live call timer**, synced to actual peer-connection establishment (not just signaling completion)
+- **Call history messages** — completed and missed calls are logged into the conversation as system messages, including duration
 
 ## Tech Stack
 

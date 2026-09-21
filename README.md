@@ -38,59 +38,69 @@ my-app/
 
 ## Features
 
-### Rate Limiting
+**### Rate Limiting**
 
-- **Hybrid Token Bucket + Sliding Window Counter** — combines burst protection with sustained request-rate control
-- **Token Bucket** — controls short bursts using configurable bucket capacity, refill rate, and request cost
-- **Sliding Window Counter** — limits the number of requests allowed over a configurable time window while avoiding the memory cost of storing every request timestamp
-- **Redis-backed state** — token and request-count state are stored in Redis, allowing the limiter to work across multiple server instances
-- **Atomic Redis Lua execution** — the complete read → calculate → decide → update flow runs inside Redis as one atomic operation, preventing race conditions between concurrent requests
-- **Redis script caching** — the Lua script is loaded with `SCRIPT LOAD` and executed with `EVALSHA`, with automatic fallback/reload handling for `NOSCRIPT`
-- **Configurable identity and limits** — requests can be identified by authenticated user ID or IP address, with configurable capacity, refill rate, window size, window limit, and request cost
-- **Rate-limit response headers** — exposes token and sliding-window state through `X-RateLimit-*` headers and returns `429 Too Many Requests` with retry information when a request is rejected
+- \***\*Hybrid Token Bucket + Sliding Window Counter\*\*** — combines burst protection with sustained request-rate control
 
-## Hybrid Rate Limiter
+- \***\*Token Bucket\*\*** — controls short bursts using configurable bucket capacity, refill rate, and request cost
+
+- \***\*Sliding Window Counter\*\*** — limits the number of requests allowed over a configurable time window while avoiding the memory cost of storing every request timestamp
+
+- \***\*Redis-backed state\*\*** — token and request-count state are stored in Redis, allowing the limiter to work across multiple server instances
+
+- \***\*Atomic Redis Lua execution\*\*** — the complete read → calculate → decide → update flow runs inside Redis as one atomic operation, preventing race conditions between concurrent requests
+
+- \***\*Redis script caching\*\*** — the Lua script is loaded with `SCRIPT LOAD` and executed with `EVALSHA`, with fallback to `EVAL` if script execution fails
+
+- \***\*Configurable limits\*\*** — the demo uses a bucket capacity of `5`, refill rate of `1 token/sec`, a `5-second` sliding window, a window limit of `5 requests`, and a request cost of `1`
+
+**## Hybrid Rate Limiter**
 
 The rate limiter combines two algorithms because they solve different problems.
 
 ![Hybrid Rate Limiter](docs/rate-limiter.png)
 
-### Token Bucket
+**### Token Bucket**
 
-The Token Bucket controls **burst traffic**.
+The Token Bucket controls \***\*burst traffic\*\***.
 
-For example:
+The current configuration is:
 
 ```text
-capacity = 10 tokens
-refillRate = 3 tokens/second
+capacity = 5 tokens
+
+refillRate = 1 token/second
+
 cost = 1 token/request
 ```
 
-The bucket can hold a maximum of 10 tokens. Each request consumes tokens based on its configured cost. Tokens are continuously refilled according to the elapsed time, but never beyond the bucket capacity.
+The bucket can hold a maximum of 5 tokens. Each request consumes tokens based on its configured cost. Tokens are continuously refilled according to the elapsed time, but never beyond the bucket capacity.
 
-This means a client with 10 available tokens can make a short burst of up to 10 requests immediately. After the burst, the bucket recovers at 3 tokens per second.
+This means a client with 5 available tokens can make a short burst of up to 5 requests immediately. After the burst, the bucket recovers at 1 token per second.
 
 ```text
 Bucket capacity = maximum sudden burst
+
 Refill rate     = how quickly burst capacity recovers
 ```
 
-### Sliding Window Counter
+**### Sliding Window Counter**
 
-The Sliding Window Counter controls the **sustained request rate**.
+The Sliding Window Counter controls the \***\*sustained request rate\*\***.
 
-For example:
+The current configuration is:
 
 ```text
-windowSize  = 3 seconds
-windowLimit = 15 requests
+windowSize  = 5 seconds
+
+windowLimit = 5 requests
 ```
 
 The limiter keeps the request count for:
 
 ```text
 Current window
+
 Previous window
 ```
 
@@ -100,67 +110,83 @@ The calculation is approximately:
 
 ```text
 estimatedCount =
+
     previousWindowCount × previousWindowWeight
+
     + currentWindowCount
 ```
 
 The previous-window weight decreases as the current window progresses.
 
-For example, halfway through a 3-second window:
+For example, halfway through a 5-second window:
 
 ```text
-Previous window count = 10
-Current window count  = 5
+Previous window count = 4
+
+Current window count  = 2
 
 Weight = 0.5
 
-Estimated count = (10 × 0.5) + 5
-                = 10 requests
+Estimated count = (4 × 0.5) + 2
+
+                = 4 requests
 ```
 
-If the configured limit is 15 requests, the request can still be accepted.
+If the configured limit is 5 requests, the request can still be accepted.
 
 This avoids the sharp reset that a simple fixed-window counter would have at the boundary between windows.
 
-### Why Combine Both?
+**### Why Combine Both?**
 
 The two algorithms provide different protections:
 
 ```text
 Token Bucket
+
     ↓
+
 Controls sudden bursts
 
 Sliding Window Counter
+
     ↓
+
 Controls sustained request volume
 ```
 
-For example:
+The current configuration is:
 
 ```text
 Token Bucket
-capacity       = 10
-refill         = 3 tokens/sec
+
+capacity       = 5
+refill         = 1 token/sec
 
 Sliding Window
-window         = 3 seconds
-limit          = 15 requests
+
+window         = 5 seconds
+limit          = 5 requests
 ```
 
 A client may be able to send several requests immediately because tokens are available, while the sliding window prevents the client from continuously exceeding the configured request volume.
 
-### Atomic Redis Lua Execution
+**### Atomic Redis Lua Execution**
 
 The rate limiter performs multiple operations:
 
 ```text
 1. Read token bucket state
+
 2. Calculate token refill
+
 3. Read current/previous window counts
+
 4. Calculate estimated window count
+
 5. Decide whether the request is allowed
+
 6. Update tokens and request count
+
 7. Set Redis expirations
 ```
 
@@ -170,54 +196,79 @@ Instead, the entire operation is executed inside Redis through `hybrid-limiter.l
 
 ```text
 Node.js
+
    │
+
    │ EVALSHA
+
    ▼
+
 Redis
+
    │
+
    └── hybrid-limiter.lua
+
           │
+
           ├── Token Bucket calculation
+
           ├── Sliding Window calculation
+
           ├── Allow / Reject decision
+
           └── Atomic state update
 ```
 
 Because the Lua script executes atomically inside Redis, concurrent requests cannot interleave the read and update steps of the limiter.
 
-### Messaging
+**### Messaging**
 
-- **1:1 direct conversations** — auto-created the moment a friend request is accepted
-- **Group chat** — create groups from your friends list, add members later, live member roster
-- **Real-time delivery** via Socket.IO, scoped per-conversation for efficient fan-out
-- **Optimistic UI** — messages appear instantly on send, reconciled against the server response
-- **Unread counts & read receipts** — per-conversation cursor tracking (`lastReadMessageId` / `lastReadAt`)
-- **Live sidebar updates** — conversation list re-sorts and updates last-message/unread badges in real time without refetching the full list
+- \***\*1:1 direct conversations\*\*** — auto-created the moment a friend request is accepted
 
-### Friends & Social
+- \***\*Group chat\*\*** — create groups from your friends list, add members later, live member roster
 
-- **Friend request flow** — send, accept, reject, cancel, with duplicate/self/reverse-pending protection enforced at the DB level (partial unique indexes + check constraints)
-- **Discover users** — browse non-friends, see pending request state inline
-- **Real-time friend events** — requests, acceptances, and rejections update both parties' UI instantly, including live socket-room updates so already-connected clients don't need a reload
+- \***\*Real-time delivery\*\*** via Socket.IO, scoped per-conversation for efficient fan-out
 
-### Presence
+- \***\*Optimistic UI\*\*** — messages appear instantly on send, reconciled against the server response
 
-- **Online/offline status**, scoped to friends only (not broadcast platform-wide, for privacy and efficiency)
-- **Grace-period disconnect handling** — brief network drops or page reloads don't flash a user offline
-- **Last-seen timestamps** persisted on true disconnect
+- \***\*Unread counts & read receipts\*\*** — per-conversation cursor tracking (`lastReadMessageId` / `lastReadAt`)
 
-### Notifications
+- \***\*Live sidebar updates\*\*** — conversation list re-sorts and updates last-message/unread badges in real time without refetching the full list
 
-- **In-app real-time notifications** for friend requests, acceptances, and rejections
-- **Unread badge counter** with mark-as-read / mark-all-as-read
+**### Friends & Social**
 
-### Audio & Video Calling
+- \***\*Friend request flow\*\*** — send, accept, reject, cancel, with duplicate/self/reverse-pending protection enforced at the DB level (partial unique indexes + check constraints)
 
-- **WebRTC peer-to-peer calling** (audio and video), signaled entirely over the existing Socket.IO connection — no separate media server required
-- **Full call lifecycle** — ringing, accept, reject, cancel, busy detection, ring timeout, and clean teardown on disconnect
-- **In-call controls** — mute/unmute mic, toggle camera on/off, with the peer notified of state changes
-- **Live call timer**, synced to actual peer-connection establishment (not just signaling completion)
-- **Call history messages** — completed and missed calls are logged into the conversation as system messages, including duration
+- \***\*Discover users\*\*** — browse non-friends, see pending request state inline
+
+- \***\*Real-time friend events\*\*** — requests, acceptances, and rejections update both parties' UI instantly, including live socket-room updates so already-connected clients don't need a reload
+
+**### Presence**
+
+- \***\*Online/offline status\*\***, scoped to friends only (not broadcast platform-wide, for privacy and efficiency)
+
+- \***\*Grace-period disconnect handling\*\*** — brief network drops or page reloads don't flash a user offline
+
+- \***\*Last-seen timestamps\*\*** persisted on true disconnect
+
+**### Notifications**
+
+- \***\*In-app real-time notifications\*\*** for friend requests, acceptances, and rejections
+
+- \***\*Unread badge counter\*\*** with mark-as-read / mark-all-as-read
+
+**### Audio & Video Calling**
+
+- \***\*WebRTC peer-to-peer calling\*\*** (audio and video), signaled entirely over the existing Socket.IO connection — no separate media server required
+
+- \***\*Full call lifecycle\*\*** — ringing, accept, reject, cancel, busy detection, ring timeout, and clean teardown on disconnect
+
+- \***\*In-call controls\*\*** — mute/unmute mic, toggle camera on/off, with the peer notified of state changes
+
+- \***\*Live call timer\*\***, synced to actual peer-connection establishment (not just signaling completion)
+
+- \***\*Call history messages\*\*** — completed and missed calls are logged into the conversation as system messages, including duration
 
 ## Tech Stack
 
